@@ -12,4 +12,5 @@ public class OrderItemResponse {
 	private String chefName;
 	private String status;
 	private Integer attempts;
+	private Long dependsOnItemId;
 }
