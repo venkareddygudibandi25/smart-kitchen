@@ -4,6 +4,64 @@ A high-performance Spring Boot 3.4 / Java 21 backend application that manages fo
 
 ---
 
+## 🏗️ Architecture Diagram
+
+```mermaid
+graph TD
+    Client[HTTP Client / Postman] -->|1. POST /orders| Controller[OrderController & AdminController]
+    Controller -->|2. Validate & DFS Cycle Check| Service[OrderServiceImpl]
+    Service -->|3. Save WAITING Order Graph| DB[(PostgreSQL Database)]
+
+    subgraph Background Scheduler Execution
+        Clock["@Scheduled(fixedDelay = 1000)<br>SmartKitchenScheduler"] -->|4. Poll WAITING Tasks| DB
+        Clock -->|5. Reserve Chef & Mark RUNNING| DB
+        Clock -->|6. Submit Async Task| Pool["ThreadPoolExecutor<br>(scheduler.concurrency=N)"]
+        Pool -->|7. Thread.sleep(cookTime)<br>Async Cooking| Worker[Worker Thread]
+        Worker -->|8. Complete Task & Release Chef| DB
+    end
+
+    subgraph System Recovery on Reboot
+        Boot[Spring Boot Startup] -->|Reset Interrupted RUNNING Tasks| Recovery[StartupRecoveryRunner]
+        Recovery -->|Mark WAITING & Release Chefs| DB
+    end
+```
+
+---
+
+## ⚙️ Concurrency & Scheduler Configuration
+
+Concurrency, retries, and polling delays are fully configurable in `application.properties`:
+
+```properties
+# application.properties
+server.port=8081
+
+# Scheduler Concurrency & Retry Settings
+scheduler.concurrency=3       # Maximum active cooking threads (N)
+scheduler.max-retries=3       # Maximum retry attempts for failed items
+scheduler.polling-delay=1000  # Poller check interval in milliseconds
+```
+
+In `SchedulerConfig.java`, the thread pool size is bound to `scheduler.concurrency`:
+
+```java
+@Configuration
+@EnableScheduling
+public class SchedulerConfig {
+
+    @Value("${scheduler.concurrency:3}")
+    private int concurrency;
+
+    @Bean
+    public ExecutorService executorService() {
+        // Enforces strict limit of N concurrent cooking threads
+        return Executors.newFixedThreadPool(concurrency);
+    }
+}
+```
+
+---
+
 ## 🌟 Key Features
 
 1. **Task Dependency Chains & Cycle Detection**:
@@ -20,7 +78,7 @@ A high-performance Spring Boot 3.4 / Java 21 backend application that manages fo
    - Fair FIFO task assignment (`findByStatusOrderByIdAsc`).
 
 4. **Restart Recovery**:
-   - `StartupRecoveryRunner` detects interrupted `RUNNING` tasks on application boot, requeues them to `WAITING`, and releases assigned chefs.
+   - `StartupRecoveryRunner` detects interrupted `RUNNING` tasks on boot, requeues them to `WAITING`, and releases assigned chefs.
 
 5. **Real-time Stats API**:
    - `GET /stats` returns metrics on running/waiting tasks and available/busy chefs.
@@ -52,22 +110,24 @@ The application starts on port `8081`.
 
 ## 📡 API Endpoint Overview
 
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/orders` | Place a new order (supports item dependencies) |
-| `GET` | `/orders/{id}` | Get order status, items, and estimated completion time |
-| `POST` | `/orders/{id}/cancel` | Cancel an order and release chefs |
-| `GET` | `/stats` | System statistics (running/waiting tasks, chef availability) |
-| `POST` | `/admin/chefs` | Add a new chef |
-| `GET` | `/admin/chefs` | List all chefs |
-| `POST` | `/admin/menu` | Add a new menu item |
-| `GET` | `/admin/menu` | List all menu items |
+| Method | Endpoint | Description | Request Body / Query |
+|---|---|---|---|
+| `POST` | `/orders` | Place a new order (supports task dependencies) | `PlaceOrderRequest` JSON |
+| `GET` | `/orders/{id}` | Get order status, items, & estimated completion time | Path variable `id` |
+| `POST` | `/orders/{id}/cancel` | Cancel an order and release assigned chefs | Path variable `id` |
+| `GET` | `/stats` | Real-time system metrics (running/waiting tasks, chef availability) | None |
+| `POST` | `/admin/chefs` | Add a new chef | `CreateChefRequest` JSON |
+| `GET` | `/admin/chefs` | List all chefs | None |
+| `POST` | `/admin/menu` | Add a new menu item | `CreateMenuItemRequest` JSON |
+| `GET` | `/admin/menu` | List all menu items | None |
 
 ---
 
-## 💡 Example API Requests
+## 📸 API Response Examples
 
 ### 1. Place an Order with Task Dependencies (`POST /orders`)
+
+**Request Payload**:
 ```json
 {
   "customerName": "Alice Smith",
@@ -78,7 +138,7 @@ The application starts on port `8081`.
 }
 ```
 
-### 2. Response Payload Format (`APIResponse<OrderResponse>`)
+**Response Payload (`201 Created`)**:
 ```json
 {
   "statusCode": 201,
@@ -110,7 +170,47 @@ The application starts on port `8081`.
 }
 ```
 
-### 3. Get System Statistics (`GET /stats`)
+---
+
+### 2. Poll Order Status (`GET /orders/1`)
+
+**Response Payload (`200 OK`)**:
+```json
+{
+  "statusCode": 200,
+  "isError": false,
+  "result": {
+    "orderId": 1,
+    "customerName": "Alice Smith",
+    "status": "RUNNING",
+    "estimatedCompletionSeconds": 3,
+    "items": [
+      {
+        "itemId": 1,
+        "itemName": "Pizza Crust",
+        "chefName": "Chef Maya",
+        "status": "SUCCESS",
+        "attempts": 0,
+        "dependsOnItemId": null
+      },
+      {
+        "itemId": 2,
+        "itemName": "Pizza Toppings",
+        "chefName": "Chef Ram",
+        "status": "RUNNING",
+        "attempts": 0,
+        "dependsOnItemId": 1
+      }
+    ]
+  }
+}
+```
+
+---
+
+### 3. Get Real-time System Statistics (`GET /stats`)
+
+**Response Payload (`200 OK`)**:
 ```json
 {
   "statusCode": 200,
@@ -118,7 +218,7 @@ The application starts on port `8081`.
   "result": {
     "runningTasks": 1,
     "waitingTasks": 3,
-    "availableChefs": 2,
+    "availableChefs": 4,
     "busyChefs": 1
   }
 }
@@ -126,6 +226,30 @@ The application starts on port `8081`.
 
 ---
 
+### 4. Circular Dependency Error (`POST /orders` - Cycle Rejected)
+
+**Request Payload with Cycle** (Item 0 depends on Item 1, Item 1 depends on Item 0):
+```json
+{
+  "customerName": "Bob Johnson",
+  "items": [
+    { "menuItemId": 1, "dependsOnIndex": 1 },
+    { "menuItemId": 2, "dependsOnIndex": 0 }
+  ]
+}
+```
+
+**Response Payload (`400 Bad Request`)**:
+```json
+{
+  "statusCode": 400,
+  "isError": true,
+  "result": "Circular dependency detected in order tasks"
+}
+```
+
+---
+
 ## 📚 Technical Documentation
-- **[DESIGN.md](DESIGN.md)**: Deep-dive answers to core interview architectural questions (concurrency, cycle detection, HikariCP protection, restart recovery).
-- **[TRADEOFFS.md](TRADEOFFS.md)**: Comparison of local implementation choices vs. Swiggy/DoorDash enterprise scale.
+- **[DESIGN.md](DESIGN.md)**: Answers to core interview architectural questions (concurrency limit, cycle detection, HikariCP transaction decoupling, restart recovery).
+- **[TRADEOFFS.md](TRADEOFFS.md)**: Architectural trade-offs comparing local thread pool choices vs. Swiggy/DoorDash production scale.
