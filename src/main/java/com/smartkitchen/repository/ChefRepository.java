@@ -1,12 +1,14 @@
 package com.smartkitchen.repository;
 
-import com.smartkitchen.entity.Chef;
+import java.util.List;
+
 import org.springframework.data.jpa.repository.JpaRepository;
 
-import java.util.List;
+import com.smartkitchen.entity.Chef;
 
 public interface ChefRepository extends JpaRepository<Chef, Long> {
 
-    List<Chef> findByAvailableTrue();
+	List<Chef> findByAvailableTrue();
 
+	long countByAvailable(Boolean available);
 }
