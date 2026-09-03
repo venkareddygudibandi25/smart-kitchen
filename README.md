@@ -4,7 +4,7 @@ A high-performance Spring Boot 3.4 / Java 21 backend application that manages fo
 
 ---
 
-## 🏗️ Architecture Diagram
+## 🏗️ System Architecture Diagram
 
 ```mermaid
 graph TD
@@ -78,7 +78,7 @@ public class SchedulerConfig {
    - Fair FIFO task assignment (`findByStatusOrderByIdAsc`).
 
 4. **Restart Recovery**:
-   - `StartupRecoveryRunner` detects interrupted `RUNNING` tasks on boot, requeues them to `WAITING`, and releases assigned chefs.
+   - `StartupRecoveryRunner` detects interrupted `RUNNING` tasks on application boot, requeues them to `WAITING`, and releases assigned chefs.
 
 5. **Real-time Stats API**:
    - `GET /stats` returns metrics on running/waiting tasks and available/busy chefs.
