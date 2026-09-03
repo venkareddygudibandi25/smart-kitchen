@@ -2,7 +2,9 @@ package com.smartkitchen.dto.request;
 
 import java.util.List;
 
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.Pattern;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
@@ -21,7 +23,7 @@ public class PlaceOrderRequest {
 	@Pattern(regexp = "^[a-zA-Z\\s'-]+$", message = "Customer name must contain only letters and cannot be numeric")
 	private String customerName;
 
-	private List<Long> itemIds;
-
+	@NotEmpty(message = "Order must contain at least one menu item")
+	@Valid
 	private List<OrderItemRequest> items;
 }

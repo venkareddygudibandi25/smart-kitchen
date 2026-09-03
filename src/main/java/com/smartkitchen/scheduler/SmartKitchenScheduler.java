@@ -21,6 +21,10 @@ import com.smartkitchen.repository.OrderRepository;
 
 import lombok.RequiredArgsConstructor;
 
+/**
+ * Background task scheduler responsible for matching waiting tasks to available chefs,
+ * executing task cooking asynchronously, handling exponential backoff retries, and updating order status.
+ */
 @Component
 @RequiredArgsConstructor
 public class SmartKitchenScheduler {
@@ -35,6 +39,10 @@ public class SmartKitchenScheduler {
 	@Value("${scheduler.max-retries:3}")
 	private int maxRetries;
 
+	/**
+	 * Periodic scheduler loop running every 1 second (configurable).
+	 * Finds available chefs and assigns waiting tasks in FIFO order.
+	 */
 	@Scheduled(fixedDelayString = "${scheduler.polling-delay:1000}")
 	@Transactional
 	public synchronized void assignTasks() {
@@ -60,6 +68,7 @@ public class SmartKitchenScheduler {
 				continue;
 			}
 
+			// Only start cooking if task dependencies are satisfied
 			if (isReadyToRun(item)) {
 				Chef chef = availableChefs.get(chefIndex++);
 				reserveTaskAndSubmit(chef.getId(), item.getId());
@@ -67,6 +76,9 @@ public class SmartKitchenScheduler {
 		}
 	}
 
+	/**
+	 * Scans for waiting tasks whose parent dependencies failed or were cancelled, and marks them BLOCKED.
+	 */
 	@Transactional
 	public void processBlockedTasks() {
 
@@ -91,6 +103,9 @@ public class SmartKitchenScheduler {
 		}
 	}
 
+	/**
+	 * Checks if a task's parent dependency has reached SUCCESS status.
+	 */
 	private boolean isReadyToRun(OrderItem item) {
 
 		if (item.getDependsOnItem() == null) {
@@ -99,6 +114,10 @@ public class SmartKitchenScheduler {
 		return item.getDependsOnItem().getStatus() == OrderItemStatus.SUCCESS;
 	}
 
+	/**
+	 * Atomically reserves a chef and marks item RUNNING in a short DB transaction (~2ms).
+	 * Then submits the cooking work to the async ExecutorService pool.
+	 */
 	@Transactional
 	public void reserveTaskAndSubmit(Long chefId, Long itemId) {
 
@@ -131,6 +150,10 @@ public class SmartKitchenScheduler {
 		executor.submit(() -> runTaskAsync(itemId, chefId, cookTimeSeconds, failureRate));
 	}
 
+	/**
+	 * Simulates cooking asynchronously on a worker thread.
+	 * NO database connection is held open during Thread.sleep().
+	 */
 	private void runTaskAsync(Long itemId, Long chefId, int cookTimeSeconds, int failureRate) {
 
 		try {
@@ -146,6 +169,9 @@ public class SmartKitchenScheduler {
 		}
 	}
 
+	/**
+	 * Short DB transaction that records task completion/failure, handles retries, and releases the chef.
+	 */
 	@Transactional
 	public void completeTask(Long itemId, Long chefId, boolean success) {
 
@@ -178,6 +204,9 @@ public class SmartKitchenScheduler {
 		}
 	}
 
+	/**
+	 * Recalculates and persists the overall Order status based on fresh OrderItem statuses from PostgreSQL.
+	 */
 	private void updateOrderStatus(Order order) {
 
 		if (order == null || order.getStatus() == OrderStatus.CANCELLED) {

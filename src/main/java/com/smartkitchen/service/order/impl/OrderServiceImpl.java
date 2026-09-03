@@ -24,6 +24,10 @@ import com.smartkitchen.service.order.OrderService;
 
 import lombok.RequiredArgsConstructor;
 
+/**
+ * Service implementation for managing customer order lifecycle including
+ * validation, cycle detection, and cancellation.
+ */
 @Service
 @RequiredArgsConstructor
 public class OrderServiceImpl implements OrderService {
@@ -31,18 +35,23 @@ public class OrderServiceImpl implements OrderService {
 	private final OrderRepository orderRepository;
 	private final MenuItemRepository menuRepository;
 
+	/**
+	 * Places a new order after validating menu items and checking for circular task dependencies.
+	 */
 	@Override
 	@Transactional
 	public OrderResponse placeOrder(PlaceOrderRequest request) {
 
-		List<OrderItemRequest> itemRequests = resolveItemRequests(request);
+		List<OrderItemRequest> itemRequests = request.getItems();
 
 		if (itemRequests == null || itemRequests.isEmpty()) {
 			throw new InvalidOrderException("Order must contain at least one menu item");
 		}
 
+		// 1. Validate for circular task dependencies using DFS 3-coloring algorithm
 		validateCircularDependencies(itemRequests);
 
+		// 2. Fetch and verify existence of all requested menu items
 		List<Long> menuItemIds = itemRequests.stream().map(OrderItemRequest::getMenuItemId).toList();
 		List<MenuItem> menuItems = menuRepository.findAllById(menuItemIds);
 
@@ -50,12 +59,14 @@ public class OrderServiceImpl implements OrderService {
 			throw new InvalidOrderException("One or more menu items do not exist");
 		}
 
+		// 3. Build parent Order entity
 		Order order = Order.builder()
 				.customerName(request.getCustomerName())
 				.status(OrderStatus.WAITING)
 				.createdAt(LocalDateTime.now())
 				.build();
 
+		// 4. Instantiate OrderItem entities
 		List<OrderItem> orderItems = new ArrayList<>();
 		for (int i = 0; i < itemRequests.size(); i++) {
 			Long mId = itemRequests.get(i).getMenuItemId();
@@ -70,6 +81,7 @@ public class OrderServiceImpl implements OrderService {
 			orderItems.add(item);
 		}
 
+		// 5. Wire parent-child task dependency links between OrderItems
 		for (int i = 0; i < itemRequests.size(); i++) {
 			Integer depIndex = itemRequests.get(i).getDependsOnIndex();
 			if (depIndex != null) {
@@ -79,6 +91,7 @@ public class OrderServiceImpl implements OrderService {
 
 		order.setItems(orderItems);
 
+		// 6. Save order graph to database
 		Order saved = orderRepository.save(order);
 
 		return mapToResponse(saved);
@@ -92,6 +105,9 @@ public class OrderServiceImpl implements OrderService {
 		return mapToResponse(order);
 	}
 
+	/**
+	 * Cancels an order, updating waiting/running items to CANCELLED and releasing assigned chefs.
+	 */
 	@Override
 	@Transactional
 	public void cancelOrder(Long id) {
@@ -111,19 +127,10 @@ public class OrderServiceImpl implements OrderService {
 		});
 	}
 
-	private List<OrderItemRequest> resolveItemRequests(PlaceOrderRequest request) {
-
-		if (request.getItems() != null && !request.getItems().isEmpty()) {
-			return request.getItems();
-		}
-		if (request.getItemIds() != null && !request.getItemIds().isEmpty()) {
-			return request.getItemIds().stream()
-					.map(id -> OrderItemRequest.builder().menuItemId(id).build())
-					.toList();
-		}
-		return List.of();
-	}
-
+	/**
+	 * DFS 3-coloring algorithm for circular dependency detection.
+	 * State 0 = UNVISITED (WHITE), State 1 = VISITING (GRAY), State 2 = VISITED (BLACK).
+	 */
 	private void validateCircularDependencies(List<OrderItemRequest> itemRequests) {
 
 		int n = itemRequests.size();
@@ -138,7 +145,7 @@ public class OrderServiceImpl implements OrderService {
 
 	private void dfsCheckCycle(int u, List<OrderItemRequest> itemRequests, int[] state) {
 
-		state[u] = 1;
+		state[u] = 1; // Mark current node as VISITING
 
 		Integer parentIndex = itemRequests.get(u).getDependsOnIndex();
 		if (parentIndex != null) {
@@ -146,6 +153,7 @@ public class OrderServiceImpl implements OrderService {
 				throw new InvalidOrderException("Invalid dependency index: " + parentIndex);
 			}
 
+			// Cycle detected if parent node is currently VISITING in recursion stack
 			if (state[parentIndex] == 1) {
 				throw new InvalidOrderException("Circular dependency detected in order tasks");
 			}
@@ -155,7 +163,7 @@ public class OrderServiceImpl implements OrderService {
 			}
 		}
 
-		state[u] = 2;
+		state[u] = 2; // Mark node as VISITED
 	}
 
 	private OrderResponse mapToResponse(Order order) {
@@ -171,10 +179,16 @@ public class OrderServiceImpl implements OrderService {
 						.build())
 				.toList();
 
+		int estimatedSeconds = order.getItems().stream()
+				.filter(item -> item.getStatus() == OrderItemStatus.WAITING || item.getStatus() == OrderItemStatus.RUNNING)
+				.mapToInt(item -> item.getMenuItem() != null ? item.getMenuItem().getCookTime() : 0)
+				.sum();
+
 		return OrderResponse.builder()
 				.orderId(order.getId())
 				.customerName(order.getCustomerName())
 				.status(order.getStatus().name())
+				.estimatedCompletionSeconds(estimatedSeconds)
 				.items(items)
 				.build();
 	}
